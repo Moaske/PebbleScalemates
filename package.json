@@ -1,0 +1,50 @@
+{
+    "author": "moaskefoto@gmail.com",
+    "dependencies": {
+        "@rebble/clay": "^1.1.0"
+    },
+    "keywords": [],
+    "name": "scalemates",
+    "pebble": {
+        "capabilities": [
+            "configurable"
+        ],
+        "displayName": "Scalemates",
+        "enableMultiJS": true,
+        "messageKeys": [
+            "FEED_NAME",
+            "ITEM_INDEX",
+            "ITEM_TOTAL",
+            "KIT_NO",
+            "BRAND",
+            "NAME",
+            "SCALE",
+            "IMG_ITEM",
+            "IMG_CHUNK_I",
+            "IMG_CHUNK_N",
+            "IMG_DATA",
+            "REQ_FEED",
+            "REQ_IMAGE",
+            "ERROR",
+            "user_id",
+            "feed_stash",
+            "feed_wishlist",
+            "feed_started",
+            "feed_completed",
+            "feed_forsale"
+        ],
+        "projectType": "native",
+        "resources": {
+            "media": []
+        },
+        "sdkVersion": "3",
+        "targetPlatforms": [
+            "emery"
+        ],
+        "uuid": "3bff7aff-09fe-473c-a256-02a2e47de703",
+        "watchapp": {
+            "watchface": false
+        }
+    },
+    "version": "1.0.0"
+}

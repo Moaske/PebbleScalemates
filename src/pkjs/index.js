@@ -21,7 +21,8 @@ Pebble.addEventListener('webviewclosed', function(e) {
     s_userId = String(uid).trim();
     localStorage.setItem('user_id', s_userId);
   }
-  var toggles = ['feed_stash','feed_wishlist','feed_started','feed_completed','feed_forsale'];
+  var toggles = ['feed_stash','feed_wishlist','feed_started',
+                 'feed_completed','feed_forsale','feed_onorder'];
   toggles.forEach(function(key, i) {
     if (settings[key] !== undefined) {
       s_feeds_enabled[i] = !!settings[key].value;
@@ -66,6 +67,7 @@ var KEY_FEED_WISHLIST  = messageKeys.feed_wishlist;
 var KEY_FEED_STARTED   = messageKeys.feed_started;
 var KEY_FEED_COMPLETED = messageKeys.feed_completed;
 var KEY_FEED_FORSALE   = messageKeys.feed_forsale;
+var KEY_FEED_ONORDER   = messageKeys.feed_onorder;
 
 var IMG_CHUNK_BYTES = 2048;
 var DETAIL_MAX_W    = 200;   // must match DETAIL_IMG_MAX_W in main.c
@@ -77,13 +79,14 @@ var FEEDS = [
   { id: 2, label: 'Started',   param: 'started'   },
   { id: 3, label: 'Completed', param: 'completed' },
   { id: 4, label: 'For Sale',  param: 'forsale'   },
+  { id: 5, label: 'On Order',  param: 'onorder'   },
 ];
 
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 var s_userId        = '';
-var s_feeds_enabled = [true, false, false, false, false];
+var s_feeds_enabled = [true, false, false, false, false, false];
 
 function applySettings(msg) {
   // msg here is a name-keyed inbound payload
@@ -92,7 +95,7 @@ function applySettings(msg) {
     localStorage.setItem('user_id', s_userId);
   }
   var names = ['feed_stash','feed_wishlist','feed_started',
-               'feed_completed','feed_forsale'];
+               'feed_completed','feed_forsale','feed_onorder'];
   for (var i = 0; i < names.length; i++) {
     if (typeof msg[names[i]] !== 'undefined') {
       s_feeds_enabled[i] = !!msg[names[i]];
@@ -108,11 +111,11 @@ function applySettings(msg) {
 // ---------------------------------------------------------------------------
 function parseItems(html) {
   var items = [];
+  var m;
 
-  // Pre-build type map from h5 positions
+  // Type comes from the nearest preceding <h5> heading
   var h5Re = /<h5>([^<]+)<\/h5>/gi;
   var h5Positions = [];
-  var m;
   while ((m = h5Re.exec(html)) !== null) {
     h5Positions.push({ pos: m.index, type: m[1].trim() });
   }
@@ -125,38 +128,58 @@ function parseItems(html) {
     return type;
   }
 
-  var imgRe = /<img[^>]+src="(\/products\/img\/[^"]+?-t240\.[a-z]+)"[^>]+title="([^"]+)"/gi;
-  while ((m = imgRe.exec(html)) !== null) {
-    var thumbUrl = 'https://www.scalemates.com' + m[1];
-    var title    = m[2];
+  /* Year cells. These sit inside the h4/h5 block, which puts them BEFORE the
+     product image in document order - so scanning forward from the image
+     never finds the right one. Collect every year cell with its position
+     instead, then pair each image with the nearest one that falls inside its
+     own item. Direction-agnostic, so it survives a markup reshuffle. */
+  var yearRe = /<div[^>]*class="[^"]*\bbl\b[^"]*"[^>]*>\s*(\d{3}[\dxX])\s*<\/div>/gi;
+  var years = [];
+  while ((m = yearRe.exec(html)) !== null) {
+    years.push({ pos: m.index, year: m[1] });
+  }
 
-    var titleRe = /^(1:\d+)\s+(.+?)\s+\(([^)]+)\)\s*$/;
-    var tm      = titleRe.exec(title);
-    var scale   = tm ? tm[1] : '';
-    var name    = tm ? tm[2] : title;
-    var rest    = tm ? tm[3] : '';
+  // Collect the images first so each one knows its neighbours
+  var imgRe = /<img[^>]+src="(\/products\/img\/[^"]+?-t240\.[a-z]+)"[^>]+title="([^"]+)"/gi;
+  var imgs = [];
+  while ((m = imgRe.exec(html)) !== null) {
+    imgs.push({ pos: m.index, url: m[1], title: m[2] });
+  }
+
+  console.log('parse: ' + imgs.length + ' images, ' + years.length + ' year cells');
+
+  /* Assign each year cell to its single nearest image, rather than letting
+     each image go looking for a year. One-to-one means an item with no year
+     of its own stays blank instead of borrowing a neighbour's. */
+  var yearFor = new Array(imgs.length);
+  var yearDist = new Array(imgs.length);
+  for (var k = 0; k < years.length; k++) {
+    var nearest = -1, nearestDist = Infinity;
+    for (var j = 0; j < imgs.length; j++) {
+      var dist = Math.abs(years[k].pos - imgs[j].pos);
+      if (dist < nearestDist) { nearestDist = dist; nearest = j; }
+    }
+    if (nearest >= 0 &&
+        (yearFor[nearest] === undefined || nearestDist < yearDist[nearest])) {
+      yearFor[nearest]  = years[k].year;
+      yearDist[nearest] = nearestDist;
+    }
+  }
+
+  for (var i = 0; i < imgs.length; i++) {
+    var title = imgs[i].title;
+
+    // title is "SCALE NAME (BRAND KITNO)"
+    var tm    = /^(1:\d+)\s+(.+?)\s+\(([^)]+)\)\s*$/.exec(title);
+    var scale = tm ? tm[1] : '';
+    var name  = tm ? tm[2] : title;
+    var rest  = tm ? tm[3] : '';
 
     var lastSpace = rest.lastIndexOf(' ');
     var brand  = lastSpace > 0 ? rest.substring(0, lastSpace)  : rest;
     var kit_no = lastSpace > 0 ? rest.substring(lastSpace + 1) : '';
 
-    /* Year. It sits well after the <img> — the scale, the name link and the
-       brand line all come first — so search up to the start of the next
-       product image rather than a fixed window, which keeps us inside this
-       item. Years are not always 4 digits: 202X, 199x and 202x all occur. */
-    var after   = m.index + m[0].length;
-    var nextImg = html.indexOf('/products/img/', after);
-    var limit   = after + 2500;
-    if (nextImg > 0 && nextImg < limit) limit = nextImg;
-    var tail = html.substring(after, limit);
-
-    var year = '';
-    var ym = /<div class="[^"]*\bbl\b[^"]*">\s*(\d{3}[\dxX])\s*<\/div>/.exec(tail);
-    if (!ym) ym = />\s*(\d{3}[\dxX])\s*</.exec(tail);   // fallback: bare year cell
-    if (ym) year = ym[1];
-
-    // Type from nearest h5
-    var type = typeAtPos(m.index);
+    var type = typeAtPos(imgs[i].pos);
     if      (/kit/i.test(type))      type = 'Kit';
     else if (/accessor/i.test(type)) type = 'Accessory';
     else if (/decal/i.test(type))    type = 'Decals';
@@ -168,9 +191,9 @@ function parseItems(html) {
       name:     name.substring(0, 79),
       brand:    brand.substring(0, 47),
       kit_no:   kit_no.substring(0, 47),
-      year:     year.substring(0, 8),
+      year:     (yearFor[i] || "").substring(0, 8),
       type:     type.substring(0, 24),
-      thumbUrl: thumbUrl,
+      thumbUrl: 'https://www.scalemates.com' + imgs[i].url,
     });
   }
   return items;
@@ -220,7 +243,7 @@ function handleFeedRequest(feedIndex) {
   console.log('handleFeedRequest: ' + feedIndex + ' user=' + s_userId +
               ' enabled=' + s_feeds_enabled[feedIndex]);
   if (!s_userId) {
-    var errMsg = {}; errMsg[KEY_ERROR] = 'No user ID - open settings';
+    var errMsg = {}; errMsg[KEY_ERROR] = 'Go to settings first to set your ID';
     Pebble.sendAppMessage(errMsg); return;
   }
   var feed = FEEDS[feedIndex];
@@ -416,7 +439,8 @@ Pebble.addEventListener('ready', function() {
   var stored = localStorage.getItem('user_id');
   if (stored) s_userId = String(stored).trim();
 
-  var keys = ['feed_stash','feed_wishlist','feed_started','feed_completed','feed_forsale'];
+  var keys = ['feed_stash','feed_wishlist','feed_started',
+              'feed_completed','feed_forsale','feed_onorder'];
   keys.forEach(function(key, i) {
     var val = localStorage.getItem(key);
     if (val !== null) s_feeds_enabled[i] = val === 'true' || val === '1';

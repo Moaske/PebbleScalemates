@@ -1,7 +1,7 @@
 #pragma once
 #include <pebble.h>
 
-#define MAX_FEEDS        5
+#define MAX_FEEDS        6
 #define MAX_ITEMS        50   // max items cached per feed
 #define MAX_STR_LEN      48   // kit_no, brand, scale
 #define MAX_NAME_LEN     80   // kit name can be longer
@@ -13,6 +13,7 @@ typedef enum {
   FEED_STARTED   = 2,
   FEED_COMPLETED = 3,
   FEED_FORSALE   = 4,
+  FEED_ONORDER   = 5,
 } FeedId;
 
 typedef struct {

@@ -12,6 +12,7 @@ static Feed s_feeds[MAX_FEEDS] = {
   { FEED_STARTED,   "Started",   false, NULL, 0, 0, false },
   { FEED_COMPLETED, "Completed", false, NULL, 0, 0, false },
   { FEED_FORSALE,   "For Sale",  false, NULL, 0, 0, false },
+  { FEED_ONORDER,   "On Order",  false, NULL, 0, 0, false },
 };
 
 static FeedId s_active = FEED_STASH;

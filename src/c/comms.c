@@ -44,13 +44,14 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *t_uid = dict_find(iter, KEY_CLAY_USER_ID);
   if (t_uid != NULL) {
     const char *user_id = t_uid->value->cstring;
-    int feed_enabled[5] = {0, 0, 0, 0, 0};
+    int feed_enabled[MAX_FEEDS] = {0};
     Tuple *tf;
     tf = dict_find(iter, KEY_CLAY_FEED_STASH);     if (tf) feed_enabled[0] = tf->value->int32;
     tf = dict_find(iter, KEY_CLAY_FEED_WISHLIST);  if (tf) feed_enabled[1] = tf->value->int32;
     tf = dict_find(iter, KEY_CLAY_FEED_STARTED);   if (tf) feed_enabled[2] = tf->value->int32;
     tf = dict_find(iter, KEY_CLAY_FEED_COMPLETED); if (tf) feed_enabled[3] = tf->value->int32;
     tf = dict_find(iter, KEY_CLAY_FEED_FORSALE);   if (tf) feed_enabled[4] = tf->value->int32;
+    tf = dict_find(iter, KEY_CLAY_FEED_ONORDER);   if (tf) feed_enabled[5] = tf->value->int32;
     if (s_on_settings) s_on_settings(user_id, feed_enabled);
     return;
   }

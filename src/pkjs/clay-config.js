@@ -63,6 +63,12 @@ module.exports = [
         "messageKey": "feed_forsale",
         "label": "For Sale",
         "defaultValue": false
+      },
+      {
+        "type": "toggle",
+        "messageKey": "feed_onorder",
+        "label": "On Order",
+        "defaultValue": false
       }
     ]
   },

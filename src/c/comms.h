@@ -1,6 +1,7 @@
 #pragma once
 #include <pebble.h>
 #include "message_keys.auto.h"
+#include "feed.h"   // MAX_FEEDS
 
 // App protocol keys — aliases for the auto-generated MESSAGE_KEY_* names
 #define KEY_FEED_NAME    MESSAGE_KEY_FEED_NAME
@@ -28,6 +29,7 @@
 #define KEY_CLAY_FEED_STARTED   MESSAGE_KEY_feed_started
 #define KEY_CLAY_FEED_COMPLETED MESSAGE_KEY_feed_completed
 #define KEY_CLAY_FEED_FORSALE   MESSAGE_KEY_feed_forsale
+#define KEY_CLAY_FEED_ONORDER   MESSAGE_KEY_feed_onorder
 
 // Chunk size in bytes — leaves room for other keys in the same message.
 // AppMessage inbox is opened at 2048 bytes; PNG chunks of 512 bytes each
@@ -53,7 +55,7 @@ typedef void (*CommsErrorCallback)(const char *message);
 // user_id is the Scalemates user ID string; feed_enabled is a 5-element array
 // indexed by FeedId (0=Stash … 4=ForSale), value 1=enabled, 0=disabled.
 typedef void (*CommsSettingsCallback)(const char *user_id,
-                                      int feed_enabled[5]);
+                                      int feed_enabled[MAX_FEEDS]);
 
 void comms_init(CommsFeedCallback     on_feed,
                 CommsImageCallback    on_image,

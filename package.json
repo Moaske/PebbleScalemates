@@ -34,7 +34,8 @@
             "feed_forsale",
             "YEAR",
             "TYPE",
-            "ITEMS"
+            "ITEMS",
+            "feed_onorder"
         ],
         "projectType": "native",
         "resources": {
@@ -45,6 +46,24 @@
                     "name": "APP_ICON_SCM",
                     "targetPlatforms": null,
                     "type": "bitmap"
+                },
+                {
+                    "file": "fonts/segoeuib.ttf",
+                    "name": "FONT_SEGOEUIB_20",
+                    "targetPlatforms": null,
+                    "type": "font"
+                },
+                {
+                    "file": "fonts/segoeuib.ttf",
+                    "name": "FONT_SEGOEUIB_18",
+                    "targetPlatforms": null,
+                    "type": "font"
+                },
+                {
+                    "file": "fonts/segoeui.ttf",
+                    "name": "FONT_SEGOEUI_18",
+                    "targetPlatforms": null,
+                    "type": "font"
                 },
                 {
                     "file": "images/detail.png",
@@ -81,5 +100,5 @@
             "watchface": false
         }
     },
-    "version": "1.0.1"
+    "version": "1.0.2"
 }

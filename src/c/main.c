@@ -8,19 +8,22 @@
 // ---------------------------------------------------------------------------
 #define SCREEN_W         200
 #define SCREEN_H         228
-#define HEADER_H          24
+#define HEADER_H          24   // SEGOEUIB_18
 #define LOGO_W            80
 #define LOGO_H            11
 #define ITEM_PAD           4
 #define DIVIDER_H          1
-#define LINE1_H           24   // ROBOTO_CONDENSED_21
-#define LINE2_H           28   // one line of GOTHIC_24_BOLD (list: ellipsised)
-#define LINE3_H           22   // GOTHIC_18_BOLD
-#define NAME_LINE_H       28   // one line of GOTHIC_24_BOLD
+#define LINE1_H           22   // SEGOEUIB_18
+#define LINE2_H           25   // one line of SEGOEUIB_20 (list: ellipsised)
+#define LINE3_H           21   // SEGOEUIB_18
+#define NAME_LINE_H       25   // one line of SEGOEUIB_20
 #define NAME_MAX_LINES     4   // detail view only — no row height to respect
 #define TEXT_PAD_X         4
-// List rows are a fixed height: names are ellipsised there, and measuring
-// every name on load was the slow part. Wrapping happens in the detail view.
+/* Line boxes are tight to the glyph heights so the three lines read as one
+   block, with ITEM_PAD doing the separating between rows instead of loose
+   leading inside them. List rows stay a fixed height: names are ellipsised
+   here, and measuring every name on load was the slow part. Wrapping happens
+   in the detail view. */
 #define ITEM_H            (LINE1_H + LINE2_H + LINE3_H + ITEM_PAD * 2 + DIVIDER_H)
 #define TEXT_W            (SCREEN_W - TEXT_PAD_X * 2)
 
@@ -54,6 +57,10 @@ static GBitmap *s_logo = NULL;
 // True between sending a feed request and the payload (or an error) landing.
 // Distinguishes "still loading" from "this feed is genuinely empty".
 static bool s_waiting_for_feed = false;
+
+// Last message from the phone (e.g. no user ID configured). Shown instead of
+// "No items" so a fresh install explains itself rather than looking broken.
+static char s_status_msg[48] = "";
 
 static GFont s_font_header;
 static GFont s_font_bold;
@@ -202,9 +209,19 @@ static void list_update_proc(Layer *layer, GContext *ctx) {
   Feed *f = feed_get(feed_active());
   if (!f || f->item_count == 0) {
     graphics_context_set_text_color(ctx, GColorDarkGray);
-    graphics_draw_text(ctx, s_waiting_for_feed ? "Loading list..." : "No items",
-      s_font_normal, GRect(0, SCREEN_H / 2 - 14, SCREEN_W, NAME_LINE_H),
-      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    const char *empty_msg = s_waiting_for_feed ? "Loading list..."
+                          : (s_status_msg[0] ? s_status_msg : "No items");
+    // Wrapped and vertically centred: the settings prompt is a full sentence
+    // and would otherwise be cut off after a couple of words.
+    GRect box = GRect(TEXT_PAD_X * 2, 0, SCREEN_W - TEXT_PAD_X * 4,
+                      NAME_LINE_H * 3);
+    GSize msz = graphics_text_layout_get_content_size(
+      empty_msg, s_font_normal, box,
+      GTextOverflowModeWordWrap, GTextAlignmentCenter);
+    box.origin.y = (SCREEN_H - msz.h) / 2;
+    box.size.h   = msz.h;
+    graphics_draw_text(ctx, empty_msg, s_font_normal, box,
+      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     draw_header(ctx, f ? f->label : "---", 0, 0);
     return;
   }
@@ -460,6 +477,7 @@ static void on_feed(const char *feed_name, int item_total,
                     const char *payload) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Feed payload: %s, %d items", feed_name, item_total);
   s_waiting_for_feed = false;
+  s_status_msg[0] = '\0';
   feed_set_payload(feed_name, item_total, payload);
   s_list_scroll   = 0;
   s_selected_item = 0;
@@ -515,14 +533,16 @@ static void on_image(int item_index, const uint8_t *data, size_t len) {
 
 static void on_error(const char *message) {
   s_waiting_for_feed = false;
+  strncpy(s_status_msg, message, sizeof(s_status_msg) - 1);
+  s_status_msg[sizeof(s_status_msg) - 1] = '\0';
   APP_LOG(APP_LOG_LEVEL_ERROR, "Comms error: %s", message);
   update_list();
 }
 
-static void on_settings(const char *user_id, int feed_enabled[5]) {
-  APP_LOG(APP_LOG_LEVEL_INFO, "Settings: user_id=%s feeds=%d%d%d%d%d",
+static void on_settings(const char *user_id, int feed_enabled[MAX_FEEDS]) {
+  APP_LOG(APP_LOG_LEVEL_INFO, "Settings: user_id=%s feeds=%d%d%d%d%d%d",
           user_id, feed_enabled[0], feed_enabled[1], feed_enabled[2],
-          feed_enabled[3], feed_enabled[4]);
+          feed_enabled[3], feed_enabled[4], feed_enabled[5]);
   for (int i = 0; i < MAX_FEEDS; i++) {
     feed_set_enabled((FeedId)i, feed_enabled[i] != 0);
   }
@@ -605,11 +625,6 @@ static void list_window_load(Window *window) {
   layer_set_update_proc(s_list_canvas, list_update_proc);
   layer_add_child(root, s_list_canvas);
 
-  s_font_header = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);       // header bar
-  s_font_bold   = fonts_get_system_font(FONT_KEY_ROBOTO_CONDENSED_21);  // kit no. + brand
-  s_font_normal = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);       // name (wraps)
-  s_font_small  = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);       // scale / meta
-
   window_set_click_config_provider(window, list_click_config_provider);
 
   // Attaching is not enough on its own: the window has to opt out of the
@@ -690,8 +705,54 @@ static void load_feed_settings(void) {
   }
 }
 
+/* Custom fonts are resources, not system fonts: fonts_get_system_font() only
+   accepts the built-in FONT_KEY_* constants. Load once here rather than in
+   window_load, because measure_detail_name() needs s_font_normal and the
+   detail window can outlive a list reload. Each returns NULL if the resource
+   is missing, so fall back to a system font rather than rendering nothing. */
+static GFont load_font(uint32_t resource_id, const char *fallback_key) {
+  GFont f = fonts_load_custom_font(resource_get_handle(resource_id));
+  if (!f) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Font %d missing, using fallback",
+            (int)resource_id);
+    return fonts_get_system_font(fallback_key);
+  }
+  return f;
+}
+
+/* Three distinct faces. fonts_load_custom_font() mallocs a fresh FontInfo on
+   every call with no caching, so each face is loaded exactly once here and the
+   role variables alias them — otherwise the regular 18 would be paid for twice. */
+static GFont s_font_reg_18;    // segoeui.ttf   (regular)
+static GFont s_font_bold_18;   // segoeuib.ttf  (bold)
+static GFont s_font_bold_20;   // segoeuib.ttf  (bold)
+
+static void load_fonts(void) {
+  s_font_reg_18  = load_font(RESOURCE_ID_FONT_SEGOEUI_18,  FONT_KEY_GOTHIC_18);
+  s_font_bold_18 = load_font(RESOURCE_ID_FONT_SEGOEUIB_18, FONT_KEY_GOTHIC_18_BOLD);
+  s_font_bold_20 = load_font(RESOURCE_ID_FONT_SEGOEUIB_20, FONT_KEY_GOTHIC_24_BOLD);
+
+  s_font_header = s_font_reg_18;    // header bar        (regular)
+  s_font_bold   = s_font_bold_18;   // kit no. + brand   (bold)
+  s_font_normal = s_font_bold_20;   // name, wraps in detail view
+  s_font_small  = s_font_bold_18;   // scale / meta
+
+  APP_LOG(APP_LOG_LEVEL_INFO, "Fonts loaded, heap free %d",
+          (int)heap_bytes_free());
+}
+
+static void unload_fonts(void) {
+  // Unload the three real handles, not the four aliases — freeing the same
+  // pointer more than once would be a double free.
+  fonts_unload_custom_font(s_font_reg_18);
+  fonts_unload_custom_font(s_font_bold_18);
+  fonts_unload_custom_font(s_font_bold_20);
+  s_font_reg_18 = s_font_bold_18 = s_font_bold_20 = NULL;
+}
+
 static void init(void) {
   feed_init();
+  load_fonts();
 
   /* Third-party apps are opted OUT of touch navigation by default — the
      firmware only marks system apps as participating, so without this call
@@ -717,6 +778,7 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  unload_fonts();
   if (s_logo) gbitmap_destroy(s_logo);
   comms_deinit();
   feed_deinit();

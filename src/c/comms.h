@@ -3,10 +3,10 @@
 #include "message_keys.auto.h"
 
 // App protocol keys — aliases for the auto-generated MESSAGE_KEY_* names
-// appinfo.json lists "FEED_NAME" → SDK generates MESSAGE_KEY_FEED_NAME
 #define KEY_FEED_NAME    MESSAGE_KEY_FEED_NAME
 #define KEY_ITEM_INDEX   MESSAGE_KEY_ITEM_INDEX
 #define KEY_ITEM_TOTAL   MESSAGE_KEY_ITEM_TOTAL
+#define KEY_ITEMS        MESSAGE_KEY_ITEMS
 #define KEY_KIT_NO       MESSAGE_KEY_KIT_NO
 #define KEY_BRAND        MESSAGE_KEY_BRAND
 #define KEY_NAME         MESSAGE_KEY_NAME
@@ -18,6 +18,8 @@
 #define KEY_REQ_FEED     MESSAGE_KEY_REQ_FEED
 #define KEY_REQ_IMAGE    MESSAGE_KEY_REQ_IMAGE
 #define KEY_ERROR        MESSAGE_KEY_ERROR
+#define KEY_YEAR         MESSAGE_KEY_YEAR
+#define KEY_TYPE         MESSAGE_KEY_TYPE
 
 // Clay settings keys
 #define KEY_CLAY_USER_ID        MESSAGE_KEY_user_id
@@ -30,13 +32,17 @@
 // Chunk size in bytes — leaves room for other keys in the same message.
 // AppMessage inbox is opened at 2048 bytes; PNG chunks of 512 bytes each
 // give us ~4 messages per KB of image data.
-#define IMG_CHUNK_BYTES  512
+#define IMG_CHUNK_BYTES  2048
+
+// Upper bound on a received image payload (raw 8-bit pixels + 4-byte header).
+// 200 x 120 + 4 = 24004, rounded up to a chunk boundary.
+#define PNG_MAX_BYTES    32768
 
 // Callbacks the rest of the app subscribes to
-typedef void (*CommsMetaCallback)(const char *feed_name,
-                                  int item_index, int item_total,
-                                  const char *kit_no, const char *brand,
-                                  const char *name, const char *scale);
+// Called once per feed with the whole packed payload.
+// payload format: kit_no|brand|name|scale|year|type  (newline separated)
+typedef void (*CommsFeedCallback)(const char *feed_name, int item_total,
+                                  const char *payload);
 
 typedef void (*CommsImageCallback)(int item_index, const uint8_t *png_data,
                                    size_t png_len);
@@ -49,7 +55,7 @@ typedef void (*CommsErrorCallback)(const char *message);
 typedef void (*CommsSettingsCallback)(const char *user_id,
                                       int feed_enabled[5]);
 
-void comms_init(CommsMetaCallback     on_meta,
+void comms_init(CommsFeedCallback     on_feed,
                 CommsImageCallback    on_image,
                 CommsErrorCallback    on_error,
                 CommsSettingsCallback on_settings);

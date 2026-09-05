@@ -6,8 +6,6 @@ var Clay = require('@rebble/clay');
 var clayConfig = require('./clay-config');
 var messageKeys = require('message_keys');
 
-// Clay auto-handles showConfiguration and webviewclosed, sending settings
-// to the watch as AppMessage using the numeric keys from message_keys.
 var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
 Pebble.addEventListener('showConfiguration', function() {
@@ -16,11 +14,8 @@ Pebble.addEventListener('showConfiguration', function() {
 
 Pebble.addEventListener('webviewclosed', function(e) {
   if (!e || !e.response) return;
-
-  // Get settings as a plain object (messageKey names as keys, not integers)
   var settings = clay.getSettings(e.response, false);
 
-  // Extract values — getSettings(response, false) returns {key: {value: X}}
   var uid = settings.user_id ? settings.user_id.value : null;
   if (uid !== null && uid !== undefined) {
     s_userId = String(uid).trim();
@@ -35,24 +30,23 @@ Pebble.addEventListener('webviewclosed', function(e) {
   });
   console.log('webviewclosed. user_id=' + s_userId + ' feeds=' + s_feeds_enabled.join(','));
 
-  // Now send to watch using the numeric messageKey integers
   var dict = clay.getSettings(e.response);
   Pebble.sendAppMessage(dict,
     function() { console.log('Sent config data to Pebble'); },
     function(e) { console.log('Failed to send config: ' + JSON.stringify(e)); }
   );
 
-  // Also trigger a feed fetch immediately without waiting for watch to re-request
   s_itemCache = {};
   handleFeedRequest(s_lastFeedIndex);
 });
 
 // ---------------------------------------------------------------------------
-// AppMessage key constants — from message_keys module (auto-assigned by SDK)
+// Message keys
 // ---------------------------------------------------------------------------
 var KEY_FEED_NAME   = messageKeys.FEED_NAME;
 var KEY_ITEM_INDEX  = messageKeys.ITEM_INDEX;
 var KEY_ITEM_TOTAL  = messageKeys.ITEM_TOTAL;
+var KEY_ITEMS       = messageKeys.ITEMS;
 var KEY_KIT_NO      = messageKeys.KIT_NO;
 var KEY_BRAND       = messageKeys.BRAND;
 var KEY_NAME        = messageKeys.NAME;
@@ -64,8 +58,8 @@ var KEY_IMG_DATA    = messageKeys.IMG_DATA;
 var KEY_REQ_FEED    = messageKeys.REQ_FEED;
 var KEY_REQ_IMAGE   = messageKeys.REQ_IMAGE;
 var KEY_ERROR       = messageKeys.ERROR;
-
-// Clay settings keys
+var KEY_YEAR        = messageKeys.YEAR;
+var KEY_TYPE        = messageKeys.TYPE;
 var KEY_USER_ID        = messageKeys.user_id;
 var KEY_FEED_STASH     = messageKeys.feed_stash;
 var KEY_FEED_WISHLIST  = messageKeys.feed_wishlist;
@@ -73,8 +67,9 @@ var KEY_FEED_STARTED   = messageKeys.feed_started;
 var KEY_FEED_COMPLETED = messageKeys.feed_completed;
 var KEY_FEED_FORSALE   = messageKeys.feed_forsale;
 
-var IMG_CHUNK_BYTES = 512;
-var THUMB_SIZE      = 140;
+var IMG_CHUNK_BYTES = 2048;
+var DETAIL_MAX_W    = 200;   // must match DETAIL_IMG_MAX_W in main.c
+var DETAIL_MAX_H    = 120;   // must match DETAIL_IMG_MAX_H in main.c
 
 var FEEDS = [
   { id: 0, label: 'Stash',     param: 'stash'     },
@@ -85,52 +80,96 @@ var FEEDS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Settings — stored locally after Clay delivers them via AppMessage
+// Settings
 // ---------------------------------------------------------------------------
-var s_userId   = '';
-var s_feeds_enabled = [true, false, false, false, false];  // defaults
+var s_userId        = '';
+var s_feeds_enabled = [true, false, false, false, false];
 
 function applySettings(msg) {
-  if (typeof msg[KEY_USER_ID] !== 'undefined') {
-    s_userId = String(msg[KEY_USER_ID]).trim();
+  // msg here is a name-keyed inbound payload
+  if (typeof msg.user_id !== 'undefined') {
+    s_userId = String(msg.user_id).trim();
     localStorage.setItem('user_id', s_userId);
   }
-  if (typeof msg[KEY_FEED_STASH]     !== 'undefined') { s_feeds_enabled[0] = !!msg[KEY_FEED_STASH];     localStorage.setItem('feed_stash',     s_feeds_enabled[0]); }
-  if (typeof msg[KEY_FEED_WISHLIST]  !== 'undefined') { s_feeds_enabled[1] = !!msg[KEY_FEED_WISHLIST];  localStorage.setItem('feed_wishlist',  s_feeds_enabled[1]); }
-  if (typeof msg[KEY_FEED_STARTED]   !== 'undefined') { s_feeds_enabled[2] = !!msg[KEY_FEED_STARTED];   localStorage.setItem('feed_started',   s_feeds_enabled[2]); }
-  if (typeof msg[KEY_FEED_COMPLETED] !== 'undefined') { s_feeds_enabled[3] = !!msg[KEY_FEED_COMPLETED]; localStorage.setItem('feed_completed', s_feeds_enabled[3]); }
-  if (typeof msg[KEY_FEED_FORSALE]   !== 'undefined') { s_feeds_enabled[4] = !!msg[KEY_FEED_FORSALE];   localStorage.setItem('feed_forsale',   s_feeds_enabled[4]); }
-  console.log('Settings applied. user_id=' + s_userId + ' feeds=' + s_feeds_enabled.join(','));
+  var names = ['feed_stash','feed_wishlist','feed_started',
+               'feed_completed','feed_forsale'];
+  for (var i = 0; i < names.length; i++) {
+    if (typeof msg[names[i]] !== 'undefined') {
+      s_feeds_enabled[i] = !!msg[names[i]];
+      localStorage.setItem(names[i], s_feeds_enabled[i]);
+    }
+  }
+  console.log('Settings applied. user_id=' + s_userId +
+              ' feeds=' + s_feeds_enabled.join(','));
 }
 
 // ---------------------------------------------------------------------------
 // HTML parser
 // ---------------------------------------------------------------------------
-
 function parseItems(html) {
   var items = [];
-  var imgRe = /<img[^>]+src="(https:\/\/www\.scalemates\.com\/products\/img\/[^"]+)"[^>]+title="([^"]+)"[^>]*>/gi;
-  var match;
 
-  while ((match = imgRe.exec(html)) !== null) {
-    var thumbUrl = match[1];
-    var title    = match[2];
+  // Pre-build type map from h5 positions
+  var h5Re = /<h5>([^<]+)<\/h5>/gi;
+  var h5Positions = [];
+  var m;
+  while ((m = h5Re.exec(html)) !== null) {
+    h5Positions.push({ pos: m.index, type: m[1].trim() });
+  }
+  function typeAtPos(pos) {
+    var type = '';
+    for (var i = 0; i < h5Positions.length; i++) {
+      if (h5Positions[i].pos < pos) type = h5Positions[i].type;
+      else break;
+    }
+    return type;
+  }
 
-    var titleRe  = /^(1:\d+)\s+(.+?)\s+\(([^)]+)\)\s*$/;
-    var tm       = titleRe.exec(title);
-    var scale    = tm ? tm[1] : '';
-    var name     = tm ? tm[2] : title;
-    var rest     = tm ? tm[3] : '';
+  var imgRe = /<img[^>]+src="(\/products\/img\/[^"]+?-t240\.[a-z]+)"[^>]+title="([^"]+)"/gi;
+  while ((m = imgRe.exec(html)) !== null) {
+    var thumbUrl = 'https://www.scalemates.com' + m[1];
+    var title    = m[2];
+
+    var titleRe = /^(1:\d+)\s+(.+?)\s+\(([^)]+)\)\s*$/;
+    var tm      = titleRe.exec(title);
+    var scale   = tm ? tm[1] : '';
+    var name    = tm ? tm[2] : title;
+    var rest    = tm ? tm[3] : '';
 
     var lastSpace = rest.lastIndexOf(' ');
     var brand  = lastSpace > 0 ? rest.substring(0, lastSpace)  : rest;
     var kit_no = lastSpace > 0 ? rest.substring(lastSpace + 1) : '';
+
+    /* Year. It sits well after the <img> — the scale, the name link and the
+       brand line all come first — so search up to the start of the next
+       product image rather than a fixed window, which keeps us inside this
+       item. Years are not always 4 digits: 202X, 199x and 202x all occur. */
+    var after   = m.index + m[0].length;
+    var nextImg = html.indexOf('/products/img/', after);
+    var limit   = after + 2500;
+    if (nextImg > 0 && nextImg < limit) limit = nextImg;
+    var tail = html.substring(after, limit);
+
+    var year = '';
+    var ym = /<div class="[^"]*\bbl\b[^"]*">\s*(\d{3}[\dxX])\s*<\/div>/.exec(tail);
+    if (!ym) ym = />\s*(\d{3}[\dxX])\s*</.exec(tail);   // fallback: bare year cell
+    if (ym) year = ym[1];
+
+    // Type from nearest h5
+    var type = typeAtPos(m.index);
+    if      (/kit/i.test(type))      type = 'Kit';
+    else if (/accessor/i.test(type)) type = 'Accessory';
+    else if (/decal/i.test(type))    type = 'Decals';
+    else if (/book/i.test(type))     type = 'Book';
+    else if (/tool/i.test(type))     type = 'Tool';
 
     items.push({
       scale:    scale.substring(0, 47),
       name:     name.substring(0, 79),
       brand:    brand.substring(0, 47),
       kit_no:   kit_no.substring(0, 47),
+      year:     year.substring(0, 8),
+      type:     type.substring(0, 24),
       thumbUrl: thumbUrl,
     });
   }
@@ -138,43 +177,87 @@ function parseItems(html) {
 }
 
 // ---------------------------------------------------------------------------
-// Metadata sender
+// AppMessage packing — FuelWatch pattern: ONE message, all items packed
+// Format per item: kit_no|brand|name|scale|year|type   (newline separated)
 // ---------------------------------------------------------------------------
-
-function sendMeta(feedLabel, itemIndex, itemTotal, item) {
-  return new Promise(function(resolve, reject) {
-    var msg = {};
-    msg[KEY_FEED_NAME]  = feedLabel;
-    msg[KEY_ITEM_INDEX] = itemIndex;
-    msg[KEY_ITEM_TOTAL] = itemTotal;
-    msg[KEY_KIT_NO]     = item.kit_no;
-    msg[KEY_BRAND]      = item.brand;
-    msg[KEY_NAME]       = item.name;
-    msg[KEY_SCALE]      = item.scale;
-    Pebble.sendAppMessage(msg,
-      function()  { resolve(); },
-      function(e) { reject(e); }
-    );
-  });
-}
-
-function sendAllMeta(feed, items) {
-  var total = items.length;
-  var index = 0;
-  function sendNext() {
-    if (index >= total) return;
-    var i = index++;
-    sendMeta(feed.label, i, total, items[i])
-      .then(function()  { setTimeout(sendNext, 30); })
-      .catch(function() { setTimeout(sendNext, 150); });
+function packItem(it) {
+  function clean(v, len) {
+    return String(v || '').substring(0, len).replace(/[|\n]/g, ' ');
   }
-  sendNext();
+  return [
+    clean(it.kit_no, 24),
+    clean(it.brand,  24),
+    clean(it.name,   40),
+    clean(it.scale,  10),
+    clean(it.year,    8),
+    clean(it.type,   16)
+  ].join('|');
+}
+
+function sendFeedToWatch(feed, items) {
+  var packed = items.map(packItem).join('\n');
+  var msg = {};
+  msg[KEY_FEED_NAME]  = feed.label;
+  msg[KEY_ITEM_TOTAL] = items.length;
+  msg[KEY_ITEMS]      = packed;
+  console.log('Sending ' + feed.label + ': ' + items.length + ' items, ' +
+              packed.length + ' bytes');
+  Pebble.sendAppMessage(msg,
+    function()  { console.log('Feed sent OK'); },
+    function(e) { console.log('Feed send failed: ' + JSON.stringify(e)); }
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Image pipeline
+// Feed cache
 // ---------------------------------------------------------------------------
+var s_itemCache     = {};
+var s_lastFeedIndex = 0;
 
+function cacheKey(feedParam) { return feedParam + ':' + s_userId; }
+
+function handleFeedRequest(feedIndex) {
+  console.log('handleFeedRequest: ' + feedIndex + ' user=' + s_userId +
+              ' enabled=' + s_feeds_enabled[feedIndex]);
+  if (!s_userId) {
+    var errMsg = {}; errMsg[KEY_ERROR] = 'No user ID - open settings';
+    Pebble.sendAppMessage(errMsg); return;
+  }
+  var feed = FEEDS[feedIndex];
+  if (!feed || !s_feeds_enabled[feedIndex]) return;
+
+  s_lastFeedIndex = feedIndex;
+
+  var key = cacheKey(feed.param);
+  if (s_itemCache[key]) {
+    sendFeedToWatch(feed, s_itemCache[key]);
+    return;
+  }
+
+  var url = 'https://www.scalemates.com/profiles/mate.php?id=' +
+            s_userId + '&p=' + feed.param;
+  console.log('Fetching: ' + url);
+
+  fetch(url)
+    .then(function(r)    { return r.text(); })
+    .then(function(html) {
+      var items = parseItems(html);
+      console.log(feed.label + ': ' + items.length + ' items');
+      if (items.length) console.log('first item: ' + JSON.stringify(items[0]));
+      s_itemCache[key] = items;
+      sendFeedToWatch(feed, items);
+    })
+    .catch(function(e) {
+      console.log('Fetch error: ' + e);
+      var errMsg = {}; errMsg[KEY_ERROR] = 'Fetch failed';
+      Pebble.sendAppMessage(errMsg);
+    });
+}
+
+
+// ---------------------------------------------------------------------------
+// Image pipeline — same official pattern: success callback drives next chunk
+// ---------------------------------------------------------------------------
 function fetchBinary(url) {
   return new Promise(function(resolve, reject) {
     var xhr = new XMLHttpRequest();
@@ -188,100 +271,125 @@ function fetchBinary(url) {
   });
 }
 
-function resizeToThumbPng(arrayBuffer) {
+/* Produce a raw Pebble 8-bit bitmap instead of a PNG.
+   Pebble's PNG decoder expands a truecolour PNG to its source format first
+   (200x120 RGBA = 96 KB in one contiguous block), which no amount of
+   compression avoids. Sending pixels in Pebble's own GColor8 byte format
+   means the watch just memcpy's them into a blank GBitmap — no decoder,
+   no expansion, fully predictable memory.
+
+   GColor8 byte layout: aarrggbb, 2 bits per channel. Opaque = 0xC0.
+   Payload: [w_hi, w_lo, h_hi, h_lo, pixels...] */
+function resizeToPebbleBitmap(arrayBuffer) {
   return new Promise(function(resolve, reject) {
     var blob = new Blob([arrayBuffer]);
     var url  = URL.createObjectURL(blob);
     var img  = new Image();
     img.onload = function() {
       URL.revokeObjectURL(url);
+
+      var sw = img.naturalWidth  || img.width  || 1;
+      var sh = img.naturalHeight || img.height || 1;
+
+      var w = DETAIL_MAX_W;
+      var h = Math.round(w * sh / sw);
+      if (h > DETAIL_MAX_H) {
+        h = DETAIL_MAX_H;
+        w = Math.round(h * sw / sh);
+      }
+
       var canvas = document.createElement('canvas');
-      canvas.width = canvas.height = THUMB_SIZE;
-      canvas.getContext('2d').drawImage(img, 0, 0, THUMB_SIZE, THUMB_SIZE);
-      var b64    = canvas.toDataURL('image/png').split(',')[1];
-      var binary = atob(b64);
-      var bytes  = new Uint8Array(binary.length);
-      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      canvas.width  = w;
+      canvas.height = h;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+
+      var d = ctx.getImageData(0, 0, w, h).data;
+
+      /* Floyd-Steinberg dithering. Snapping each channel to 0/85/170/255
+         on its own leaves visible banding across the gradients in box art;
+         diffusing the rounding error into neighbouring pixels trades that
+         banding for fine noise, which reads as far more detail at this size.
+         Costs nothing in payload - the result is still one byte per pixel. */
+      var err = new Float32Array(w * h * 3);
+      for (var i = 0, e = 0; i < d.length; i += 4, e += 3) {
+        err[e]     = d[i];
+        err[e + 1] = d[i + 1];
+        err[e + 2] = d[i + 2];
+      }
+
+      function diffuse(idx, amount) {
+        var v = err[idx] + amount;
+        err[idx] = v < 0 ? 0 : (v > 255 ? 255 : v);
+      }
+
+      var bytes = new Uint8Array(4 + w * h);
+      bytes[0] = (w >> 8) & 0xFF;
+      bytes[1] =  w       & 0xFF;
+      bytes[2] = (h >> 8) & 0xFF;
+      bytes[3] =  h       & 0xFF;
+
+      var o = 4;
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          var base = (y * w + x) * 3;
+          var lvl  = [0, 0, 0];
+
+          for (var c = 0; c < 3; c++) {
+            var oldv = err[base + c];
+            var q    = (oldv / 85 + 0.5) | 0;      // nearest of 0,85,170,255
+            if (q < 0) q = 0; else if (q > 3) q = 3;
+            lvl[c] = q;
+            var qe = oldv - q * 85;                // rounding error
+
+            // Distribute: right 7/16, below-left 3/16, below 5/16, below-right 1/16
+            if (x + 1 < w)              diffuse(base + 3 + c,             qe * 7 / 16);
+            if (y + 1 < h) {
+              var below = ((y + 1) * w + x) * 3 + c;
+              if (x > 0)                diffuse(below - 3,                qe * 3 / 16);
+                                        diffuse(below,                    qe * 5 / 16);
+              if (x + 1 < w)            diffuse(below + 3,                qe * 1 / 16);
+            }
+          }
+
+          bytes[o++] = 0xC0 | (lvl[0] << 4) | (lvl[1] << 2) | lvl[2];
+        }
+      }
+
+      console.log('Bitmap ' + w + 'x' + h + ' -> ' + bytes.length + ' bytes raw');
       resolve(bytes);
     };
-    img.onerror = function() { URL.revokeObjectURL(url); reject(new Error('img load failed')); };
+    img.onerror = function() {
+      URL.revokeObjectURL(url);
+      reject(new Error('img load failed'));
+    };
     img.src = url;
   });
 }
 
-function sendPngChunks(itemIndex, pngBytes) {
-  var totalChunks = Math.ceil(pngBytes.length / IMG_CHUNK_BYTES);
-  function sendChunk(i) {
-    if (i >= totalChunks) return;
-    var start = i * IMG_CHUNK_BYTES;
-    var chunk = Array.from(pngBytes.subarray(start, Math.min(start + IMG_CHUNK_BYTES, pngBytes.length)));
-    var msg = {};
-    msg[KEY_IMG_ITEM]    = itemIndex;
-    msg[KEY_IMG_CHUNK_I] = i;
-    msg[KEY_IMG_CHUNK_N] = totalChunks;
-    msg[KEY_IMG_DATA]    = chunk;
-    Pebble.sendAppMessage(msg,
-      function() { setTimeout(function() { sendChunk(i + 1); }, 20); },
-      function() { setTimeout(function() { sendChunk(i); },     200); }
-    );
-  }
-  sendChunk(0);
-}
+function sendChunk(itemIndex, pngBytes, index, totalChunks) {
+  var start = index * IMG_CHUNK_BYTES;
+  var chunk = Array.from(pngBytes.subarray(start,
+                Math.min(start + IMG_CHUNK_BYTES, pngBytes.length)));
+  var msg = {};
+  msg[KEY_IMG_ITEM]    = itemIndex;
+  msg[KEY_IMG_CHUNK_I] = index;
+  msg[KEY_IMG_CHUNK_N] = totalChunks;
+  msg[KEY_IMG_DATA]    = chunk;
 
-// ---------------------------------------------------------------------------
-// Feed cache
-// ---------------------------------------------------------------------------
-
-var s_itemCache     = {};
-var s_lastFeedIndex = 0;
-
-function cacheKey(feedParam) { return feedParam + ':' + s_userId; }
-
-// ---------------------------------------------------------------------------
-// Request handlers
-// ---------------------------------------------------------------------------
-
-function handleFeedRequest(feedIndex) {
-  console.log('handleFeedRequest: feedIndex=' + feedIndex + ' userId="' + s_userId + '" enabled=' + s_feeds_enabled[feedIndex]);
-
-  if (!s_userId) {
-    var errMsg = {};
-    errMsg[KEY_ERROR] = 'No user ID — open settings';
-    Pebble.sendAppMessage(errMsg);
-    return;
-  }
-
-  var feed = FEEDS[feedIndex];
-  if (!feed || !s_feeds_enabled[feedIndex]) {
-    console.log('handleFeedRequest: bailing — feed=' + JSON.stringify(feed) + ' enabled=' + s_feeds_enabled[feedIndex]);
-    return;
-  }
-
-  var key = cacheKey(feed.param);
-  if (s_itemCache[key]) {
-    sendAllMeta(feed, s_itemCache[key]);
-    return;
-  }
-
-  var url = 'https://www.scalemates.com/profiles/mate.php?id=' +
-            s_userId + '&p=' + feed.param;
-  console.log('Fetching: ' + url);
-
-  fetch(url)
-    .then(function(r)    { return r.text(); })
-    .then(function(html) {
-      console.log('HTML preview: ' + html.substring(0, 500));
-      var items = parseItems(html);
-      console.log(feed.label + ': ' + items.length + ' items parsed from ' + html.length + ' bytes');
-      s_itemCache[key] = items;
-      sendAllMeta(feed, items);
-    })
-    .catch(function(e) {
-      console.log('Fetch error: ' + e);
-      var errMsg = {};
-      errMsg[KEY_ERROR] = 'Fetch failed';
-      Pebble.sendAppMessage(errMsg);
-    });
+  Pebble.sendAppMessage(msg,
+    function() {
+      if (index + 1 < totalChunks) {
+        sendChunk(itemIndex, pngBytes, index + 1, totalChunks);
+      } else {
+        console.log('Image ' + itemIndex + ' complete (' + pngBytes.length + 'B)');
+      }
+    },
+    function(e) {
+      console.log('Chunk ' + index + ' failed, retrying');
+      setTimeout(function() { sendChunk(itemIndex, pngBytes, index, totalChunks); }, 500);
+    }
+  );
 }
 
 function handleImageRequest(itemIndex) {
@@ -290,12 +398,13 @@ function handleImageRequest(itemIndex) {
   var items = s_itemCache[cacheKey(feed.param)];
   if (!items || itemIndex >= items.length) return;
 
+  console.log('Image request for item ' + itemIndex);
   fetchBinary(items[itemIndex].thumbUrl)
-    .then(function(buf)      { return resizeToThumbPng(buf); })
+    .then(function(buf)      { return resizeToPebbleBitmap(buf); })
     .then(function(pngBytes) {
-      console.log('Item ' + itemIndex + ': ' + pngBytes.length + 'B, ' +
-                  Math.ceil(pngBytes.length / IMG_CHUNK_BYTES) + ' chunks');
-      sendPngChunks(itemIndex, pngBytes);
+      var totalChunks = Math.ceil(pngBytes.length / IMG_CHUNK_BYTES);
+      console.log('Sending image ' + itemIndex + ': ' + pngBytes.length + 'B, ' + totalChunks + ' chunks');
+      sendChunk(itemIndex, pngBytes, 0, totalChunks);
     })
     .catch(function(e) { console.log('Image error: ' + e); });
 }
@@ -303,55 +412,47 @@ function handleImageRequest(itemIndex) {
 // ---------------------------------------------------------------------------
 // PebbleKit JS events
 // ---------------------------------------------------------------------------
-
 Pebble.addEventListener('ready', function() {
-  // Clay persists settings to localStorage under each messageKey name.
-  // Load them now so the first KEY_REQ_FEED from the watch can be served.
   var stored = localStorage.getItem('user_id');
   if (stored) s_userId = String(stored).trim();
 
-  var stash     = localStorage.getItem('feed_stash');
-  var wishlist  = localStorage.getItem('feed_wishlist');
-  var started   = localStorage.getItem('feed_started');
-  var completed = localStorage.getItem('feed_completed');
-  var forsale   = localStorage.getItem('feed_forsale');
-
-  if (stash     !== null) s_feeds_enabled[0] = stash     === 'true' || stash     === '1';
-  if (wishlist  !== null) s_feeds_enabled[1] = wishlist  === 'true' || wishlist  === '1';
-  if (started   !== null) s_feeds_enabled[2] = started   === 'true' || started   === '1';
-  if (completed !== null) s_feeds_enabled[3] = completed === 'true' || completed === '1';
-  if (forsale   !== null) s_feeds_enabled[4] = forsale   === 'true' || forsale   === '1';
+  var keys = ['feed_stash','feed_wishlist','feed_started','feed_completed','feed_forsale'];
+  keys.forEach(function(key, i) {
+    var val = localStorage.getItem(key);
+    if (val !== null) s_feeds_enabled[i] = val === 'true' || val === '1';
+  });
 
   console.log('JS ready. user_id=' + s_userId + ' feeds=' + s_feeds_enabled.join(','));
+
+  if (s_userId) handleFeedRequest(s_lastFeedIndex);
 });
 
+/* Inbound payloads from the watch are keyed by message key NAME
+   (e.g. "REQ_FEED"), not by the numeric messageKeys value used when
+   sending. Outbound still uses the numeric keys. */
 Pebble.addEventListener('appmessage', function(e) {
   var msg = e.payload;
+  console.log('appmessage in: ' + JSON.stringify(msg));
 
-  // Debug: log everything that arrives
-  console.log('appmessage keys: ' + JSON.stringify(Object.keys(msg)));
-  console.log('appmessage values: ' + JSON.stringify(msg));
-
-  // Clay settings arrive here after the user saves config.
-  var isSettings = typeof msg[KEY_USER_ID]    !== 'undefined' ||
-                   typeof msg[KEY_FEED_STASH] !== 'undefined';
-  if (isSettings) {
+  if (typeof msg.user_id !== 'undefined' ||
+      typeof msg.feed_stash !== 'undefined') {
     applySettings(msg);
     s_itemCache = {};
-    console.log('Requesting feed ' + s_lastFeedIndex + ' after settings, userId=' + s_userId);
     handleFeedRequest(s_lastFeedIndex);
     return;
   }
 
-  if (typeof msg[KEY_REQ_FEED] !== 'undefined') {
-    s_lastFeedIndex = parseInt(msg[KEY_REQ_FEED], 10);
-    handleFeedRequest(s_lastFeedIndex);
+  if (typeof msg.REQ_FEED !== 'undefined') {
+    var feedIndex = parseInt(msg.REQ_FEED, 10);
+    console.log('REQ_FEED -> ' + feedIndex);
+    handleFeedRequest(feedIndex);
+    return;
   }
 
-  if (typeof msg[KEY_REQ_IMAGE] !== 'undefined') {
-    handleImageRequest(parseInt(msg[KEY_REQ_IMAGE], 10));
+  if (typeof msg.REQ_IMAGE !== 'undefined') {
+    var itemIndex = parseInt(msg.REQ_IMAGE, 10);
+    console.log('REQ_IMAGE -> ' + itemIndex);
+    handleImageRequest(itemIndex);
+    return;
   }
 });
-
-// NOTE: showConfiguration and webviewclosed are handled by @rebble/clay.
-// Clay sends the settings dict to the watch, which arrives in appmessage above.

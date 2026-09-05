@@ -1,7 +1,7 @@
 module.exports = [
   {
     "type": "heading",
-    "defaultValue": "ScaleMates Stash"
+    "defaultValue": "ScaleMates Lists"
   },
   {
     "type": "section",
@@ -29,6 +29,10 @@ module.exports = [
       {
         "type": "heading",
         "defaultValue": "Feeds to Show"
+      },
+      {
+        "type": "text",
+        "defaultValue": "Long press Select on the watch to cycle through chosen feeds."
       },
       {
         "type": "toggle",

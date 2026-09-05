@@ -20,8 +20,11 @@ typedef struct {
   char brand[MAX_STR_LEN];
   char name[MAX_NAME_LEN];
   char scale[MAX_STR_LEN];
-  bool image_ready;          // true once PNG has been decoded into bmp
-  GBitmap *bmp;              // NULL until image arrives
+  char year[12];
+  char type[28];
+  bool image_ready;
+  GBitmap *bmp;
+  int16_t name_h;   // wrapped height of name in the detail view (px), 0 = unmeasured
 } StashItem;
 
 typedef struct {
@@ -45,10 +48,14 @@ Feed      *feed_get(FeedId id);
 StashItem *feed_get_item(FeedId id, int index);
 
 // Called by comms callbacks to populate data
-void feed_set_meta(const char *feed_name,
-                   int item_index, int item_total,
-                   const char *kit_no, const char *brand,
-                   const char *name, const char *scale);
+// Parse a packed payload (one line per item:
+// kit_no|brand|name|scale|year|type) into the named feed.
+void feed_set_payload(const char *feed_name, int item_total,
+                      const char *payload);
+
+// Free every decoded bitmap in the active feed. Call this BEFORE allocating a
+// replacement: holding the old one while the new is created doubles peak usage.
+void feed_clear_images(void);
 
 void feed_set_image(int item_index, GBitmap *bmp);
 

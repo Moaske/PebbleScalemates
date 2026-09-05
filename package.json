@@ -31,11 +31,46 @@
             "feed_wishlist",
             "feed_started",
             "feed_completed",
-            "feed_forsale"
+            "feed_forsale",
+            "YEAR",
+            "TYPE",
+            "ITEMS"
         ],
         "projectType": "native",
         "resources": {
-            "media": []
+            "media": [
+                {
+                    "file": "images/app_icon_scm.png",
+                    "menuIcon": true,
+                    "name": "APP_ICON_SCM",
+                    "targetPlatforms": null,
+                    "type": "bitmap"
+                },
+                {
+                    "file": "images/detail.png",
+                    "name": "DETAIL_ICON",
+                    "targetPlatforms": null,
+                    "type": "bitmap"
+                },
+                {
+                    "file": "images/next.png",
+                    "name": "NEXT_ICON",
+                    "targetPlatforms": null,
+                    "type": "bitmap"
+                },
+                {
+                    "file": "images/previous.png",
+                    "name": "PREVIOUS_ICON",
+                    "targetPlatforms": null,
+                    "type": "bitmap"
+                },
+                {
+                    "file": "images/scm_logo.png",
+                    "name": "SCM_LOGO",
+                    "targetPlatforms": null,
+                    "type": "bitmap"
+                }
+            ]
         },
         "sdkVersion": "3",
         "targetPlatforms": [
@@ -46,5 +81,5 @@
             "watchface": false
         }
     },
-    "version": "1.0.0"
+    "version": "1.0.1"
 }

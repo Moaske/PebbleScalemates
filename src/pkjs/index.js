@@ -110,6 +110,44 @@ function applySettings(msg) {
 // ---------------------------------------------------------------------------
 // HTML parser
 // ---------------------------------------------------------------------------
+/* Titles come straight out of an HTML attribute, so they still carry entities:
+   &quot; in 'F-4 "Phantom"', &amp; in 'Revell & Co', &#39; in apostrophes.
+   Decode in a single pass so an encoded ampersand (&amp;quot;) resolves to
+   literal &quot; rather than being decoded twice into a quote. */
+var HTML_ENTITIES = {
+  quot: '"',  apos: "'",  amp: '&',   lt: '<',    gt: '>',
+  nbsp: ' ',  middot: '\u00b7',       deg: '\u00b0',
+  ndash: '\u2013',        mdash: '\u2014',        hellip: '\u2026',
+  lsquo: '\u2018',        rsquo: '\u2019',
+  ldquo: '\u201c',        rdquo: '\u201d',
+  laquo: '\u00ab',        raquo: '\u00bb',
+  szlig: '\u00df',        auml: '\u00e4', ouml: '\u00f6', uuml: '\u00fc',
+  Auml:  '\u00c4',        Ouml:  '\u00d6', Uuml: '\u00dc',
+  eacute:'\u00e9',        egrave:'\u00e8', ecirc: '\u00ea',
+  aacute:'\u00e1',        agrave:'\u00e0', acirc: '\u00e2',
+  iacute:'\u00ed',        oacute:'\u00f3', uacute:'\u00fa',
+  ccedil:'\u00e7',        ntilde:'\u00f1', aring: '\u00e5',
+  oslash:'\u00f8',        aelig: '\u00e6', times: '\u00d7'
+};
+
+function decodeEntities(str) {
+  if (!str || str.indexOf('&') === -1) return str;
+  return str.replace(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g,
+    function(whole, body) {
+      if (body.charAt(0) === '#') {
+        var hex  = (body.charAt(1) === 'x' || body.charAt(1) === 'X');
+        var code = hex ? parseInt(body.substring(2), 16)
+                       : parseInt(body.substring(1), 10);
+        if (isNaN(code) || code <= 0 || code > 0xFFFF) return whole;
+        return String.fromCharCode(code);
+      }
+      if (HTML_ENTITIES.hasOwnProperty(body)) return HTML_ENTITIES[body];
+      var lower = body.toLowerCase();
+      if (HTML_ENTITIES.hasOwnProperty(lower)) return HTML_ENTITIES[lower];
+      return whole;   // unknown entity: leave it rather than mangle it
+    });
+}
+
 function parseItems(html) {
   var items = [];
   var m;
@@ -171,9 +209,13 @@ function parseItems(html) {
     var title = imgs[i].title;
 
     // title is "SCALE NAME (BRAND KITNO)"
+    /* Split the RAW title first, then decode only the name. Decoding up front
+       would be riskier: a numeric entity for a bracket (&#41;) would turn into
+       a literal ')' and break the '(BRAND KITNO)' match. Scale, brand and kit
+       numbers are plain ASCII in practice, so only the name needs decoding. */
     var tm    = /^(1:\d+)\s+(.+?)\s+\(([^)]+)\)\s*$/.exec(title);
     var scale = tm ? tm[1] : '';
-    var name  = tm ? tm[2] : title;
+    var name  = decodeEntities(tm ? tm[2] : title);
     var rest  = tm ? tm[3] : '';
 
     var lastSpace = rest.lastIndexOf(' ');
@@ -205,8 +247,20 @@ function parseItems(html) {
 // Format per item: kit_no|brand|name|scale|year|type   (newline separated)
 // ---------------------------------------------------------------------------
 function packItem(it) {
-  function clean(v, len) {
-    return String(v || '').substring(0, len).replace(/[|\n]/g, ' ');
+  /* Truncate by UTF-8 BYTES, not characters. The watch copies these into fixed
+     char[] buffers with strncpy, which counts bytes - so 40 accented chars
+     would be 80 bytes and get cut mid-character, leaving a broken glyph.
+     Also strip the delimiters, since a numeric entity can decode to one. */
+  function clean(v, maxBytes) {
+    var str = String(v || '').replace(/[|\r\n]/g, ' ');
+    var bytes = 0, i = 0;
+    for (; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      var n = c < 0x80 ? 1 : (c < 0x800 ? 2 : 3);
+      if (bytes + n > maxBytes) break;
+      bytes += n;
+    }
+    return str.substring(0, i);
   }
   return [
     clean(it.kit_no, 24),

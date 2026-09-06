@@ -75,6 +75,7 @@ static void update_detail(void);
 static void request_active_feed(void);
 static void open_detail(int item_index);
 static void cycle_feed(void);
+static void fling_stop(void);
 static bool recognizer_always_simultaneous(const Recognizer *r1, const Recognizer *r2);
 static void save_feed_settings(void);
 static void load_feed_settings(void);
@@ -329,6 +330,7 @@ static void cycle_feed(void) {
       if (feed_is_enabled((FeedId)i)) { feed_set_active((FeedId)i); break; }
     }
   }
+  fling_stop();
   APP_LOG(APP_LOG_LEVEL_INFO, "Cycled to feed %d (%s)",
           (int)feed_active(), feed_get(feed_active())->label);
   s_list_scroll   = 0;
@@ -345,31 +347,89 @@ static bool recognizer_always_simultaneous(const Recognizer *r1, const Recognize
   return true;
 }
 
+/* Momentum scrolling. A pan alone is strictly 1:1 with the finger, so a flick
+   only ever moves as far as the finger did - hence the sticky feel. On
+   liftoff we take the pan velocity and keep coasting, decaying each frame,
+   which is what makes a big swing travel several items. */
+#define FLING_MIN_VELOCITY   150   // px/s below which a lift is not a fling
+#define FLING_FRAME_MS        33   // ~30 fps
+#define FLING_DECAY_NUM       88   // velocity *= 88/100 each frame
+#define FLING_DECAY_DEN      100
+#define FLING_STOP_VELOCITY   40   // px/s at which coasting ends
+
+static AppTimer *s_fling_timer = NULL;
+static int       s_fling_vel   = 0;   // px/s, positive scrolls down
+
+static void sync_selected_to_scroll(void) {
+  Feed *f = feed_get(feed_active());
+  if (!f || f->item_count == 0) return;
+  int idx = first_visible_item();
+  if (idx < 0) idx = 0;
+  if (idx >= f->item_count) idx = f->item_count - 1;
+  s_selected_item = idx;
+}
+
+static void fling_stop(void) {
+  if (s_fling_timer) {
+    app_timer_cancel(s_fling_timer);
+    s_fling_timer = NULL;
+  }
+  s_fling_vel = 0;
+}
+
+static void fling_timer_cb(void *context) {
+  s_fling_timer = NULL;
+
+  int before = s_list_scroll;
+  s_list_scroll = clamp_list_scroll(s_list_scroll +
+                                    (s_fling_vel * FLING_FRAME_MS) / 1000);
+  sync_selected_to_scroll();
+  update_list();
+
+  // Stop when we run out of speed or hit an end and stopped moving
+  s_fling_vel = (s_fling_vel * FLING_DECAY_NUM) / FLING_DECAY_DEN;
+  if (s_list_scroll == before) { s_fling_vel = 0; return; }
+  if (s_fling_vel > FLING_STOP_VELOCITY || s_fling_vel < -FLING_STOP_VELOCITY) {
+    s_fling_timer = app_timer_register(FLING_FRAME_MS, fling_timer_cb, NULL);
+  }
+}
+
 static void list_pan_handler(const Recognizer *recognizer, RecognizerEvent event) {
   static int16_t pan_base = 0;
-  Feed *f = feed_get(feed_active());
+
   switch (event) {
     case RecognizerEvent_Started:
+      fling_stop();               // a new touch halts any coast in progress
       pan_base = s_list_scroll;
       break;
+
     case RecognizerEvent_Updated: {
       GPoint d = pan_recognizer_get_delta_since_start(recognizer);
       s_list_scroll = clamp_list_scroll(pan_base - d.y);
-      if (f && f->item_count > 0) {
-        int idx = first_visible_item();
-        if (idx < 0) idx = 0;
-        if (idx >= f->item_count) idx = f->item_count - 1;
-        s_selected_item = idx;
-      }
+      sync_selected_to_scroll();
       update_list();
       break;
     }
-    case RecognizerEvent_Completed:
-      s_list_scroll = clamp_list_scroll(item_top(s_selected_item));
+
+    case RecognizerEvent_Completed: {
+      /* No snap-to-item here. Snapping to item_top() of the first visible row
+         always rounds *down*, so at the very bottom it pulled the view back up
+         and hid the last item's final line. Free positioning also lets the end
+         of the list rest exactly at max scroll. */
+      GPoint v = pan_recognizer_get_velocity(recognizer);
+      int vy = -v.y;              // finger up (negative y) scrolls list down
+      if (vy > FLING_MIN_VELOCITY || vy < -FLING_MIN_VELOCITY) {
+        s_fling_vel   = vy;
+        s_fling_timer = app_timer_register(FLING_FRAME_MS, fling_timer_cb, NULL);
+      }
+      sync_selected_to_scroll();
       update_list();
       break;
+    }
+
     case RecognizerEvent_Cancelled:
       s_list_scroll = clamp_list_scroll(pan_base);
+      sync_selected_to_scroll();
       update_list();
       break;
   }
@@ -379,6 +439,7 @@ static void list_pan_handler(const Recognizer *recognizer, RecognizerEvent event
    it, so a tap never opens something the user hasn't seen highlighted. */
 static void list_tap_handler(const Recognizer *recognizer, RecognizerEvent event) {
   if (event != RecognizerEvent_Completed) return;
+  fling_stop();
 
   Feed *f = feed_get(feed_active());
   if (!f || f->item_count == 0) return;
@@ -427,6 +488,7 @@ static void detail_pan_handler(const Recognizer *recognizer, RecognizerEvent eve
 // List click handlers
 // ---------------------------------------------------------------------------
 static void list_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  fling_stop();
   Feed *f = feed_get(feed_active());
   if (!f || f->item_count == 0) return;
   if (s_selected_item > 0) {
@@ -437,6 +499,7 @@ static void list_up_click_handler(ClickRecognizerRef recognizer, void *context) 
 }
 
 static void list_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  fling_stop();
   Feed *f = feed_get(feed_active());
   if (!f || f->item_count == 0) return;
   if (s_selected_item < f->item_count - 1) {
@@ -447,6 +510,7 @@ static void list_down_click_handler(ClickRecognizerRef recognizer, void *context
 }
 
 static void list_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  fling_stop();
   open_detail(s_selected_item);
 }
 
@@ -552,6 +616,7 @@ static void on_settings(const char *user_id, int feed_enabled[MAX_FEEDS]) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Settings: user_id=%s feeds=%d%d%d%d%d%d",
           user_id, feed_enabled[0], feed_enabled[1], feed_enabled[2],
           feed_enabled[3], feed_enabled[4], feed_enabled[5]);
+  fling_stop();
   for (int i = 0; i < MAX_FEEDS; i++) {
     feed_set_enabled((FeedId)i, feed_enabled[i] != 0);
   }
@@ -661,6 +726,7 @@ static void list_window_load(Window *window) {
 }
 
 static void list_window_unload(Window *window) {
+  fling_stop();   // never leave a timer running against a destroyed layer
   layer_destroy(s_list_canvas);
   s_list_canvas = NULL;
 

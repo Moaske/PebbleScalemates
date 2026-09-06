@@ -38,6 +38,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
   );
 
   s_itemCache = {};
+  s_inFlight  = {};
   handleFeedRequest(s_lastFeedIndex);
 });
 
@@ -235,6 +236,9 @@ function sendFeedToWatch(feed, items) {
 // Feed cache
 // ---------------------------------------------------------------------------
 var s_itemCache     = {};
+// Feeds currently being fetched, so a duplicate request while one is already
+// in flight is ignored instead of starting a second identical fetch.
+var s_inFlight      = {};
 var s_lastFeedIndex = 0;
 
 function cacheKey(feedParam) { return feedParam + ':' + s_userId; }
@@ -257,13 +261,20 @@ function handleFeedRequest(feedIndex) {
     return;
   }
 
+  if (s_inFlight[key]) {
+    console.log(feed.label + ' already fetching, ignoring duplicate request');
+    return;
+  }
+
   var url = 'https://www.scalemates.com/profiles/mate.php?id=' +
             s_userId + '&p=' + feed.param;
   console.log('Fetching: ' + url);
+  s_inFlight[key] = true;
 
   fetch(url)
     .then(function(r)    { return r.text(); })
     .then(function(html) {
+      s_inFlight[key] = false;
       var items = parseItems(html);
       console.log(feed.label + ': ' + items.length + ' items');
       if (items.length) console.log('first item: ' + JSON.stringify(items[0]));
@@ -271,6 +282,7 @@ function handleFeedRequest(feedIndex) {
       sendFeedToWatch(feed, items);
     })
     .catch(function(e) {
+      s_inFlight[key] = false;
       console.log('Fetch error: ' + e);
       var errMsg = {}; errMsg[KEY_ERROR] = 'Fetch failed';
       Pebble.sendAppMessage(errMsg);
@@ -462,6 +474,7 @@ Pebble.addEventListener('appmessage', function(e) {
       typeof msg.feed_stash !== 'undefined') {
     applySettings(msg);
     s_itemCache = {};
+    s_inFlight  = {};
     handleFeedRequest(s_lastFeedIndex);
     return;
   }

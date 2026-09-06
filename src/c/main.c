@@ -146,10 +146,16 @@ static void draw_header(GContext *ctx, const char *label, int current, int total
   graphics_context_set_fill_color(ctx, GColorIslamicGreen);
   graphics_fill_rect(ctx, GRect(0, 0, SCREEN_W, HEADER_H), 0, GCornerNone);
 
-  // Logo sits flush right, vertically centred in the bar
+  /* Logo sits flush right, vertically centred in the bar.
+     The default compositing mode is GCompOpAssign, which copies raw pixel
+     values and paints the PNG's alpha-zero pixels as black — hence the black
+     box behind the logo. GCompOpSet is the mode that honours alpha on colour
+     displays. Restore the default afterwards so nothing else is affected. */
   if (s_logo) {
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
     graphics_draw_bitmap_in_rect(ctx, s_logo,
       GRect(SCREEN_W - LOGO_W, (HEADER_H - LOGO_H) / 2, LOGO_W, LOGO_H));
+    graphics_context_set_compositing_mode(ctx, GCompOpAssign);
   }
 
   char hdr[40];
@@ -289,7 +295,10 @@ static void detail_update_proc(Layer *layer, GContext *ctx) {
     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
   y += name_h;
 
-  char line3[64];
+  // Worst case is scale(47) + year(11) + type(27) + two 4-byte " · " + NUL.
+  // The middot is 2 bytes in UTF-8, so 64 was not enough and snprintf would
+  // have silently truncated the type on a long entry.
+  char line3[96];
   snprintf(line3, sizeof(line3), "%s · %s · %s", it->scale, it->year, it->type);
   graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, line3, s_font_small,

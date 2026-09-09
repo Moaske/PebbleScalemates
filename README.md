@@ -1,2 +1,2 @@
 # PebbleScalemates
-A Scalemates prolfiel viewer to quickly have you're stash at hand when at the shops
+A Scalemates profiel viewer to quickly have your stash at hand when at the shops or a fair
